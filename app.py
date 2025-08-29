@@ -6,6 +6,7 @@ from flask import Flask, request, jsonify
 import os
 import time
 import json
+import re
 
 # إعدادات التسجيل
 logging.basicConfig(
@@ -27,7 +28,7 @@ user_states = {}
 
 def get_instagram_sessionid(username, password):
     """
-    الحصول على sessionid من انستقرام
+    الحصول على sessionid من انستقرام - الإصدار المحدث
     """
     login_url = "https://www.instagram.com/accounts/login/ajax/"
     session = requests.Session()
@@ -46,25 +47,29 @@ def get_instagram_sessionid(username, password):
     }
     
     try:
-        # الحصول على CSRF token
-        resp = session.get("https://www.instagram.com/accounts/login/", headers=headers, timeout=30)
-        csrf_token = resp.cookies.get("csrftoken")
+        # الحصول على الصفحة الرئيسية واستخراج CSRF token
+        home_page = session.get("https://www.instagram.com/accounts/login/", headers=headers, timeout=30)
+        csrf_token = re.search(r'"csrf_token":"([^"]+)"', home_page.text).group(1)
         
         if not csrf_token:
             logger.error("Failed to get CSRF token")
             return None
             
         headers["X-CSRFToken"] = csrf_token
-        headers["Cookie"] = f"csrftoken={csrf_token};"
+        headers["Cookie"] = f"csrftoken={csrf_token}; ig_did=0;"
 
         time.sleep(2)
         
-        # تحضير البيانات للدخول
+        # تحضير البيانات للدخول - الطريقة المحدثة
+        timestamp = int(time.time())
+        enc_password = f"#PWD_INSTAGRAM_BROWSER:0:{timestamp}:{password}"
+        
         payload = {
             "username": username,
-            "enc_password": f"#PWD_INSTAGRAM_BROWSER:0:{int(time.time()*1000)}:{password}",
-            "queryParams": {},
-            "optIntoOneTap": "false"
+            "enc_password": enc_password,
+            "queryParams": "{}",
+            "optIntoOneTap": "false",
+            "trustedDeviceRecords": "{}"
         }
         
         # محاولة الدخول
@@ -80,7 +85,7 @@ def get_instagram_sessionid(username, password):
             logger.error("Failed to parse JSON response")
             return None
 
-        if resp_json.get("authenticated"):
+        if resp_json.get("authenticated") and resp_json.get("status") == "ok":
             sessionid = session.cookies.get("sessionid")
             if sessionid:
                 logger.info("Login successful")
@@ -89,7 +94,8 @@ def get_instagram_sessionid(username, password):
                 logger.error("Session ID not found in cookies")
                 return None
         else:
-            logger.error("Authentication failed")
+            error_message = resp_json.get("message", "Unknown error")
+            logger.error(f"Authentication failed: {error_message}")
             return None
             
     except requests.exceptions.Timeout:
@@ -119,7 +125,7 @@ def instagram_login_thread(chat_id, username, password):
         else:
             bot.send_message(
                 chat_id, 
-                "❌ فشل تسجيل الدخول. تأكد من صحة البيانات وحاول مرة أخرى."
+                "❌ فشل تسجيل الدخول. تأكد من صحة البيانات وحاول مرة أخرى.\n\nملاحظة: قد تحتاج إلى تفعيل التحقق بخطوتين أو قد يكون الحساب محميًا بإعدادات أمان إضافية."
             )
             
     except Exception as e:
@@ -128,7 +134,8 @@ def instagram_login_thread(chat_id, username, password):
     
     finally:
         # تنظيف حالة المستخدم
-        user_states.pop(chat_id, None)
+        if chat_id in user_states:
+            user_states.pop(chat_id)
 
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
@@ -151,6 +158,8 @@ def send_welcome(message):
         📱 يمكنك الحصول على SessionID لحسابك في انستقرام
 
         🔒 بياناتك محمية ولا يتم تخزينها
+        
+        ⚠️ ملاحظة: إذا كان لديك تحقق بخطوتين مفعل، قد تحتاج إلى تعطيله مؤقتاً
         """
         
         bot.send_message(
