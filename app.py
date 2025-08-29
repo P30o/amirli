@@ -1,12 +1,21 @@
 import requests
-import time
-from flask import Flask, request
 import telebot
+import threading
+import logging
+from flask import Flask, request
+import os
+import time
+
+logging.basicConfig(level=logging.DEBUG)
+logger = logging.getLogger(__name__)
+
+app = Flask(__name__)
 
 TOKEN = "5838783352:AAGBJSOdnVlOdvKhbtS8fVnSaz4nhDOzDqU"
 WEBHOOK_URL = "https://amirli.onrender.com/webhook"
-bot = telebot.TeleBot(TOKEN)
-app = Flask(__name__)
+bot = telebot.TeleBot(TOKEN, threaded=False)
+
+user_states = {}
 
 def get_instagram_sessionid(username, password):
     login_url = "https://www.instagram.com/accounts/login/ajax/"
@@ -30,8 +39,7 @@ def get_instagram_sessionid(username, password):
     headers["X-CSRFToken"] = csrf_token
     headers["Cookie"] = f"csrftoken={csrf_token};"
 
-    time.sleep(2)  # Instagram may block fast requests
-
+    time.sleep(2)
     payload = {
         "username": username,
         "enc_password": f"#PWD_INSTAGRAM_BROWSER:0:{int(time.time()*1000)}:{password}",
@@ -50,44 +58,56 @@ def get_instagram_sessionid(username, password):
     else:
         return None
 
-user_states = {}
+def instagram_login_thread(chat_id, username, password):
+    bot.send_message(chat_id, "⏳ جاري تسجيل الدخول...")
+    sessionid = get_instagram_sessionid(username, password)
+    if sessionid:
+        bot.send_message(chat_id, f"✅ تم تسجيل الدخول بنجاح.\nSessionID:\n`{sessionid}`", parse_mode="Markdown")
+    else:
+        bot.send_message(chat_id, "❌ فشل تسجيل الدخول. تأكد من البيانات وحاول مرة أخرى.")
+    user_states.pop(chat_id, None)
 
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
-    bot.reply_to(message, "أرسل اسم المستخدم الخاص بإنستغرام:")
-
-@bot.message_handler(func=lambda m: True)
-def handle_message(message):
     chat_id = message.chat.id
-    if chat_id not in user_states:
-        user_states[chat_id] = {'step': 'username'}
-        user_states[chat_id]['username'] = message.text
-        bot.send_message(chat_id, "أرسل كلمة المرور الخاصة بإنستغرام:")
-    elif user_states[chat_id]['step'] == 'username':
-        user_states[chat_id]['username'] = message.text
-        user_states[chat_id]['step'] = 'password'
-        bot.send_message(chat_id, "أرسل كلمة المرور الخاصة بإنستغرام:")
-    elif user_states[chat_id]['step'] == 'password':
-        username = user_states[chat_id]['username']
-        password = message.text
-        bot.send_message(chat_id, "جاري تسجيل الدخول...")
-        sessionid = get_instagram_sessionid(username, password)
-        if sessionid:
-            bot.send_message(chat_id, f"Session ID: {sessionid}")
-        else:
-            bot.send_message(chat_id, "فشل تسجيل الدخول. تأكد من البيانات وحاول مرة أخرى.")
-        user_states.pop(chat_id)
+    markup = telebot.types.InlineKeyboardMarkup()
+    markup.add(
+        telebot.types.InlineKeyboardButton("تسجيل دخول انستقرام", callback_data="login_instagram")
+    )
+    bot.send_message(chat_id, "👋 أهلاً بك في بوت انستقرام!\nاختر وظيفة:", reply_markup=markup)
+
+@bot.callback_query_handler(func=lambda call: True)
+def callback_query(call):
+    chat_id = call.message.chat.id
+    if call.data == "login_instagram":
+        user_states[chat_id] = {'step': 'ask_username'}
+        bot.send_message(chat_id, "📝 أرسل اسم المستخدم الخاص بك في انستقرام:")
+
+@bot.message_handler(func=lambda m: user_states.get(m.chat.id, {}).get('step') == 'ask_username')
+def receive_username(message):
+    chat_id = message.chat.id
+    user_states[chat_id]['username'] = message.text.strip()
+    user_states[chat_id]['step'] = 'ask_password'
+    bot.send_message(chat_id, "🔑 أرسل كلمة المرور الخاصة بك:")
+
+@bot.message_handler(func=lambda m: user_states.get(m.chat.id, {}).get('step') == 'ask_password')
+def receive_password(message):
+    chat_id = message.chat.id
+    username = user_states[chat_id]['username']
+    password = message.text.strip()
+    thread = threading.Thread(target=instagram_login_thread, args=(chat_id, username, password))
+    thread.start()
+    user_states[chat_id]['step'] = None
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
-    if request.headers.get('content-type') == 'application/json':
-        json_str = request.get_data().decode('utf-8')
-        update = telebot.types.Update.de_json(json_str)
-        bot.process_new_updates([update])
-        return ''
-    return 'ok'
+    json_str = request.get_data(as_text=True)
+    update = telebot.types.Update.de_json(json_str)
+    bot.process_new_updates([update])
+    return '!', 200
 
 if __name__ == "__main__":
     bot.remove_webhook()
+    time.sleep(1)
     bot.set_webhook(url=WEBHOOK_URL)
-    app.run(host="0.0.0.0", port=5000)
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
