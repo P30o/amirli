@@ -11,7 +11,7 @@ logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 
-bot = telebot.TeleBot("7628474532:AAHQMH9nJHYqB25X89kQYtE8Ms3x5e6m7TY", threaded=False)
+bot = telebot.TeleBot("5838783352:AAGBJSOdnVlOdvKhbtS8fVnSaz4nhDOzDqU", threaded=False)
 
 user_states = {}
 
